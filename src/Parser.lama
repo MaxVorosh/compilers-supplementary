@@ -131,7 +131,13 @@ var primary    = memo $ eta syntax (
                                                                                                                               | Void -> Ignore (Var (x))
                                                                                                                               | _    -> Var (x)
                                                                                                                               esac
-                                                                                                                    | Some (args) -> assertValue (a, Call (x, args), loc)
+                                                                                                                    | Some (args) -> 
+                                                                                                                      case x of 
+                                                                                                                        "read" -> assertValue (a, Builtin (x, args), loc)
+                                                                                                                        | "write" -> assertValue (a, Builtin (x, args), loc)
+                                                                                                                        | "length" -> assertValue (a, Builtin (x, args), loc)
+                                                                                                                        | _ -> assertValue (a, Call (x, args), loc)
+                                                                                                                      esac
                                                                                                                     esac
                                                                                                                  }} |
                                       x=kSkip                                           {fun (a) {assertVoid (a, Skip, loc)} } |

@@ -132,12 +132,9 @@ fun eval (c@[s, w], expr) {
       esac
     | Assn (l, r) -> 
       case evalList(c, {l, r}) of 
-        [[s, w], {Ref (lv), rv}] -> [[s <- [lv, rv], w], rv]
-      esac
-    | Read (varname) -> case readWorld(c[1]) of [res, w] -> [[(c[0] <- [varname, res]), w], 0] esac
-    | Write (expr1) -> 
-      case eval(c, expr1) of 
-        [c1, e] -> [[c1[0], writeWorld(e, c[1])], 0]
+        [[s, w], {Ref (lv), rv}] -> [[s <- [lv, rv], w], rv] |
+        [[s, w], {ElemRef (Sexp(name, args), ind), rv}] -> args[ind] := rv; [[s, w], rv] |
+        [[s, w], {ElemRef (arr, ind), rv}] -> arr[ind] := rv; [[s, w], rv]
       esac
     | Seq (e1, e2) -> 
       case eval(c, e1) of
@@ -163,10 +160,34 @@ fun eval (c@[s, w], expr) {
       esac
     | Call (name, args) -> 
       case evalList(c, args) of [[s1, w], vals] -> 
-        case lookup(s1, name) of Fun(args, body) -> 
+        case lookupFun(s1, name) of Fun(args, body) -> 
           case addArgsVals(enterFunction(s1), args, vals) of scope -> 
             case eval([scope, w], body) of [[scope, w], res] -> [[leaveFunction(s1, getGlobal(scope)), w], res] esac
           esac
+        esac
+      esac
+    | String (st) -> [c, st]
+    | Array (arr) -> case evalList(c, arr) of [c, arr] -> [c, listArray(arr)] esac
+    | Sexp (st, exprList) -> case evalList(c, exprList) of [c, arr] -> [c, Sexp(st, listArray(arr))] esac
+    | Elem (listExpr, indExpr) -> 
+      case eval(c, listExpr) of [c, arr] -> 
+        case eval(c, indExpr) of [c, ind] -> 
+          case arr of 
+            Sexp (name, args) -> [c, args[ind]]
+            | _ -> [c, arr[ind]]
+          esac
+        esac
+      esac
+    | ElemRef (listExpr, indExpr) -> 
+      case eval(c, listExpr) of [c, arr] ->
+        case eval(c, indExpr) of [c, ind] ->
+          [c, ElemRef(arr, ind)]
+        esac
+      esac
+    | Builtin (name, args) ->
+      case evalList(c, args) of [c, args] -> 
+        case evalBuiltin(name, args, c[1]) of 
+          [v, w] -> [[c[0], w], v]
         esac
       esac
   esac
