@@ -125,8 +125,6 @@ fun eval (env, w, insns) {
   fun eval (c@[st, cst, s, w], insns) {
     case insns of 
       {} -> c
-      | READ : t -> case readWorld (c[3]) of [res, w] -> eval ([res : c[0], c[1], c[2], w], t) esac
-      | WRITE : t -> case c[0] of e: stT -> eval ([stT, c[1], c[2], writeWorld (e, c[3])], t) esac
       | BINOP (op) : t -> case c[0] of top : pretop : stT -> eval ([evalOp(op, pretop, top) : stT, c[1], c[2], c[3]], t) esac
       | LD (varname) : t -> eval([lookup(c[2], varname) : c[0], c[1], c[2], c[3]], t)
       | LDA (x) : t -> eval([Ref (x) : c[0], c[1], c[2], c[3]], t)
@@ -164,6 +162,30 @@ fun eval (env, w, insns) {
         case cst of 
           {} -> c
           | [state, pr] : cstT -> eval([c[0], cstT, state, c[3]], pr)
+        esac
+      | STRING (s) : t -> eval([s : c[0], c[1], c[2], c[3]], t)
+      | ARRAY (n) : t -> case take(st, n) of [_ : st, arr] -> eval([listArray(arr), st, c[1], c[2], c[3]], t) esac
+      | SEXP (name, n) : t -> case take(st, n) of [_ : st, arr] -> eval([Sexp(name, listArray(arr)) : st, c[1], c[2], c[3]], t) esac
+      | STA : t -> 
+          case st of v : i : arr : st ->
+            case arr of 
+              Sexp(name, args) -> args[i] := v; eval([v : st, c[1], c[2], c[3]], t)
+              | _ -> arr[i] := v; eval([v : st, c[1], c[2], c[3]], t)
+            esac
+          esac
+      | ELEM : t -> 
+        case st of i : arr : st ->
+          case arr of
+              Sexp (name, args) -> eval([args[i] : st, c[1], c[2], c[3]], t)
+              | _ -> eval([arr[i] : st, c[1], c[2], c[3]], t)
+          esac
+        esac
+      | BUILTIN (f, n) : t -> 
+        case take(st, n) of 
+          [st, arr] -> 
+            case evalBuiltin(f, arr, w) of 
+              [v, w] -> eval([v : st, c[1], c[2], w], t)
+            esac
         esac
    esac
   }
@@ -438,18 +460,16 @@ public fun compileSM (expr) {
     | Var    (x)        -> [false, env, singletonBuffer (LD (lookupVar(env, x)))]
     | Ref    (x)        -> [false, env, singletonBuffer (LDA (lookupVar(env, x)))]
     | Const  (n)        -> [false, env, singletonBuffer (CONST (n))]
-    | Read  (x)         -> [false, env, singletonBuffer (READ) <+ ST (lookupVar(env, x)) <+ DROP]
-    | Write (e) -> 
-      case env.genLabel of 
-        [wlab, env] ->
-          case compile (wlab, env, e) of 
-            [labUsed, env, code] -> [false, env, code <+> label (wlab, labUsed) <+ WRITE]
-          esac
-      esac
     | Assn (Ref (x), e) -> 
       case env.genLabel of 
         [lab, env] -> case compile(lab, env, e) of
           [labUsed, env, code] -> [false, env, code <+> label(lab, labUsed) <+ ST(lookupVar(env, x))]
+        esac
+      esac
+    | Assn (er@ElemRef (x, i), e) -> 
+      case env.genLabel of 
+        [lab, env] -> case compileMany(lab, env, {er, e}) of
+          [labUsed, env, code] -> [false, env, code <+> label(lab, labUsed) <+ STA]
         esac
       esac
     | Assn  (x, e) ->
@@ -532,6 +552,53 @@ public fun compileSM (expr) {
           ) in (
             let Fun (name, expr) = lookupFun(env, name) in [false, env, code <+ CALL (name, expr)]
           )
+    | String (s) -> [false, env, singletonBuffer(STRING (s))]
+    | Array (arr) -> 
+      case arr of 
+        {} -> [false, env, singletonBuffer(CONST (0)) <+ ARRAY (0)]
+        | _ -> 
+          case env.genLabel of [lblArr, env] ->
+            case compileMany(lblArr, env, arr) of 
+              [lblUsed, env, arrCode] -> [false, env, singletonBuffer(CONST(size(arr))) <+> arrCode <+> label(lblArr, lblUsed) <+ ARRAY(size(arr))]
+            esac
+          esac
+      esac
+    | Sexp (name, arr) -> 
+      case arr of 
+        {} -> [false, env, singletonBuffer(CONST (0)) <+ SEXP (name, 0)]
+        | _ -> 
+          case env.genLabel of [lblArr, env] ->
+            case compileMany(lblArr, env, arr) of 
+              [lblUsed, env, arrCode] -> [false, env, singletonBuffer(CONST(size(arr))) <+> arrCode <+> label(lblArr, lblUsed) <+ SEXP(name, size(arr))]
+            esac
+          esac
+      esac
+    | Elem (arrExpr, indExpr) -> 
+      case env.genLabels(2) of [lblArr, lblInd, env] ->
+        case compile(lblArr, env, arrExpr) of [lblArrUsed, env, arrCode] ->
+          case compile(lblInd, env, indExpr) of [lblIndUsed, env, indCode] -> 
+            [false, env, arrCode <+> label(lblArr, lblArrUsed) <+> indCode <+> label(lblInd, lblIndUsed) <+ ELEM] 
+          esac
+        esac
+      esac
+    | ElemRef (arrExpr, indExpr) -> 
+      case env.genLabels(2) of [lblArr, lblInd, env] ->
+        case compile(lblArr, env, arrExpr) of [lblArrUsed, env, arrCode] ->
+          case compile(lblInd, env, indExpr) of [lblIndUsed, env, indCode] -> 
+            [false, env, arrCode <+> label(lblArr, lblArrUsed) <+> indCode <+> label(lblInd, lblIndUsed)] 
+          esac
+        esac
+      esac
+    | Builtin (f, args) ->
+      case args of 
+        {} -> [false, env, singletonBuffer(BUILTIN (f, 0))]
+        | _ -> 
+          case env.genLabel of [lblB, env] ->
+            case compileMany(lblB, env, args) of
+              [lblBUsed, env, bCode] -> [false, env, bCode <+> label(lblB, lblBUsed) <+ BUILTIN (f, size(args))]
+            esac
+          esac
+      esac
     esac
   }
 
